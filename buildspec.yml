@@ -1,0 +1,20 @@
+Version: 0.2
+phases:
+  install:
+    runtime-versions:
+        python: 3.8
+
+  pre_build:
+   commands:
+      - echo "Creating Lambda Layer"
+
+  build:
+   commands:
+        - echo "Lambda Layer Creation Started............"
+        - bash -x layer-code/layer-build.sh
+        
+          
+##################### Folders creation is model bucket ########################      
+  post_build:
+   commands:
+     - echo "Pipeline Executed Successfully"

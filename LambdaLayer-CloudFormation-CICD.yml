@@ -1,0 +1,201 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+#############################################
+
+Description: CodePipeline for creating lambda layers
+
+############### Parameters ################
+Parameters:
+    RepoName:
+      Description: Name of the Repo for Pipeline
+      Type: String
+    BranchName:
+      Description:  Name of the Branch in the repo for Pipeline
+      Type: String   
+    LayerName:
+      Description:  Layer Name you want to create
+      Type: String
+
+
+
+
+Resources:
+#########################   IAM Role for CodePipeline & CodeBuild ###################  
+  CodePipeLineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal: 
+              Service: 
+                - codepipeline.amazonaws.com
+                - lambda.amazonaws.com
+                - events.amazonaws.com
+                - codebuild.amazonaws.com
+            Action: 
+            - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodePipeline_FullAccess
+        - arn:aws:iam::aws:policy/AWSLambda_FullAccess
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AWSCodeCommitFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AWSCodeBuildAdminAccess
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+        - arn:aws:iam::aws:policy/IAMFullAccess
+
+#############   S3 Bucket for Artifacts ################
+  
+  ArtifactS3Bucket:
+    Type: AWS::S3::Bucket
+    
+
+          
+
+###################   CodePipeline ###########
+  CodePipelineSam:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${AWS::StackName}
+      RoleArn: !GetAtt CodePipeLineRole.Arn
+      ArtifactStore: 
+        Type: S3
+        Location: !Ref ArtifactS3Bucket
+      Stages: 
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId: 
+                Category: Source
+                Owner: AWS
+                Version: '1'
+                Provider: CodeCommit
+              Configuration:
+                RepositoryName: !Ref RepoName
+                BranchName: !Ref BranchName
+              OutputArtifacts:
+                - Name: !Sub 'SourceSamOutputArtifacts-${BranchName}-${AWS::AccountId}'
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              Configuration: 
+                ProjectName: !Ref CodeBuildSam
+              InputArtifacts:
+                - Name: !Sub 'SourceSamOutputArtifacts-${BranchName}-${AWS::AccountId}'
+              OutputArtifacts:
+                - Name: !Sub 'BuildSamOutputArtifacts-${BranchName}-${AWS::AccountId}'
+              RunOrder: 1       
+  
+##############   CodeBuild ###################
+  CodeBuildSam:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${AWS::StackName}      
+      Description: Backend Build for SAM Deployment
+      ServiceRole: !GetAtt CodePipeLineRole.Arn
+      Source: 
+        BuildSpec: buildspec.yml
+        Type: CODEPIPELINE
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:5.0
+        EnvironmentVariables:         
+          - Name: samstack
+            Value: !Sub '${AWS::StackName}-layer'
+          - Name: ArtifactS3Bucket
+            Value: !Ref ArtifactS3Bucket
+          - Name: LayerName
+            Value: !Ref LayerName      
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED  
+
+
+  EmptyS3BucketLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+     # FunctionName: 'EmptyS3BucketLambdaFunction'
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          from __future__ import print_function
+          import json, boto3, logging
+          import urllib3
+          import json
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          SUCCESS = "SUCCESS"
+          FAILED = "FAILED"
+          
+          def lambda_handler(event, context):
+            logger.info("event: {}".format(event))
+            try:
+                bucket = event['ResourceProperties']['BucketName']
+                logger.info("bucket: {}, event['RequestType']: {}".format(bucket,event['RequestType']))
+                if event['RequestType'] == 'Delete':
+                    s3 = boto3.resource('s3')
+                    bucket = s3.Bucket(bucket)
+                    for obj in bucket.objects.filter():
+                        logger.info("delete obj: {}".format(obj))
+                        s3.Object(bucket.name, obj.key).delete()
+                        bucket.object_versions.filter(Prefix=obj.key).delete()
+                        logger.info("Permanently deleted all versions of object %s.", obj.key)  
+                    bucket.object_versions.all().delete()
+                sendResponseCfn(event, context, SUCCESS)
+            except Exception as e:
+                logger.info("Exception: {}".format(e))
+                logger.exception("Couldn't delete all versions found Exception")
+                sendResponseCfn(event, context, FAILED)
+          
+          def sendResponseCfn(event, context, responseStatus):
+            responseData = {}
+            responseData['Data'] = {}
+            send(event, context, responseStatus, responseData, "CustomResourcePhysicalID")
+          http = urllib3.PoolManager()
+          def send(event, context, responseStatus, responseData, physicalResourceId=None, noEcho=False, reason=None):
+              responseUrl = event['ResponseURL']
+              print(responseUrl)
+              responseBody = {
+                  'Status' : responseStatus,
+                  'Reason' : reason or "See the details in CloudWatch Log Stream: {}".format(context.log_stream_name),
+                  'PhysicalResourceId' : physicalResourceId or context.log_stream_name,
+                  'StackId' : event['StackId'],
+                  'RequestId' : event['RequestId'],
+                  'LogicalResourceId' : event['LogicalResourceId'],
+                  'NoEcho' : noEcho,
+                  'Data' : responseData
+              }
+              json_responseBody = json.dumps(responseBody)
+              print("Response body:")
+              print(json_responseBody)
+              headers = {
+                  'content-type' : '',
+                  'content-length' : str(len(json_responseBody))
+              }
+              try:
+                  response = http.request('PUT', responseUrl, headers=headers, body=json_responseBody)
+                  print("Status code:", response.status)
+              except Exception as e: 
+                  print("send(..) failed executing http.request(..):", e)
+      Role: !GetAtt CodePipeLineRole.Arn
+      Runtime: python3.7  
+      Timeout: 30     
+########################## Custom resources #########################
+  cleanupArtifactBucket:
+    Type: Custom::ArtifactBucket
+    Properties:
+      ServiceToken: !GetAtt EmptyS3BucketLambdaFunction.Arn
+      BucketName: !Ref ArtifactS3Bucket
+
+    
