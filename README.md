@@ -14,6 +14,7 @@ Prerequisites:
   Before proceeding ahead you have to clone and push this code to your codecommit repo. 
   In that code there is a requirement.txt file in which you can specify which layer you need.
   Note the branch of code repo.
+  
   ![image](https://user-images.githubusercontent.com/23731547/191704833-3780f41d-1019-4ff9-bb8e-dedfb639e883.png)
 
   
@@ -47,7 +48,9 @@ The same process you can follow if you need another layer with different package
 
 
 if you need more understanding regarding cloudformatin and CICD 
+
 CloudFormation Getting Started : https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/GettingStarted.Walkthrough.html
+
 CICD Getting Started : https://docs.aws.amazon.com/codepipeline/latest/userguide/getting-started-codepipeline.html
 
 
